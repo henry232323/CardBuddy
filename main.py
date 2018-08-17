@@ -4,6 +4,7 @@ from discord.ext import commands
 import discord
 from urllib.parse import urlencode
 import json
+import random
 
 with open("auth.json") as wf:
     auth = json.load(wf)
@@ -52,12 +53,15 @@ class Commands:
     def __init__(self, bot):
         self.bot = bot
 
-    API_BASE = "http://api.tcgplayer.com/v1.10.0"
+    API_BASE = "http://api.tcgplayer.com/v1.6.0"
     manifests: dict
     categories: dict
     POKEMON_ID: int
     MAGIC_ID: int
     YUGIOH_ID: int
+
+    with open("files.json", 'r') as fd:
+        ocarddata = json.load(fd)
 
     async def prep(self):
         self.manifests = {}
@@ -109,63 +113,183 @@ class Commands:
                      rarity: str = None, category: str = None):
         """Query the database for a card. Usage `c!search "Ho-Oh GX (Full Art)"`
         `c!search "Extremely Slow Zombie" Magic` """
-        filters = [
-            {"name": "productName", "values": [query]}
-        ]
-        if rarity is not None:
-            filters.append({"name": "Rarity", "values": [i.replace("_", " ") for i in rarity.split()]})
+        async with ctx.channel.typing():
+            filters = [
+                {"name": "productName", "values": [query]}
+            ]
+            if rarity is not None:
+                filters.append({"name": "Rarity", "values": [i.replace("_", " ") for i in rarity.split()]})
 
-        if category is not None:
-            filters.append({"name": "Category", "values": [i.replace("_", " ") for i in category.split()]})
+            if category is not None:
+                filters.append({"name": "Category", "values": [i.replace("_", " ") for i in category.split()]})
 
-        resp = await ctx.bot.session.post(
-            f"{self.API_BASE}/catalog/categories/{self.categories[game]}/search",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
-            },
-            data=json.dumps({
-                "sort": sort_type,
-                "filters": filters
-            })
-        )
-        data = await resp.json()
-        # ids = data['results'][0]
+            resp = await ctx.bot.session.post(
+                f"{self.API_BASE}/catalog/categories/{self.categories[game]}/search",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                },
+                data=json.dumps({
+                    "sort": sort_type,
+                    "filters": filters
+                })
+            )
+            try:
+                data = await resp.json()
+            except:
+                await ctx.send("No items found")
+                return
+            # ids = data['results'][0]
 
-        pricedata = await ctx.bot.session.get(
-            f"{self.API_BASE}/pricing/product/" + ",".join(str(x) for x in data['results']),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
-            },
-        )
+            pricedata = await ctx.bot.session.get(
+                f"{self.API_BASE}/pricing/product/" + ",".join(str(x) for x in data['results']),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                },
+            )
 
-        listdata = await ctx.bot.session.get(
-            f"{self.API_BASE}/catalog/products/" + ",".join(str(x) for x in data['results']),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
-            },
-        )
+            listdata = await ctx.bot.session.get(
+                f"{self.API_BASE}/catalog/products/" + ",".join(str(x) for x in data['results']),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                },
+            )
 
-        pricejson = await pricedata.json()
-        pricejson['results'].sort(key=lambda x: data['results'].index(x['productId']))
+            pricejson = await pricedata.json()
+            pricejson['results'].sort(key=lambda x: data['results'].index(x['productId']))
 
-        listjson = await listdata.json()
-        listjson['results'].sort(key=lambda x: data['results'].index(x['productId']))
+            listjson = await listdata.json()
+            listjson['results'].sort(key=lambda x: data['results'].index(x['productId']))
+            emotes = "\u25c0\u25b6\u274c"
+
+            card = listjson['results'][0]
+            prices = filter(lambda x: x['productId'] == card['productId'], pricejson['results'])
+            # print(pricejson['results'])
+            embed = discord.Embed(title=f"{card['productName']} [Item {1}/{len(data['results'])}]", url=card['url'])
+            embed.set_image(url=card['image'])
+            embed.add_field(name="Pack", value=card['group']['name'])
+            embed.add_field(name="Type", value=card['group']['abbreviation'])
+            for item in card['extendedData']:
+                embed.add_field(name=item['displayName'], value=item['value'])
+
+            for price in prices:
+                if price['marketPrice'] is not None:
+                    embed.add_field(name=f"Market ({price['subTypeName']})",
+                                    value=f"${price['marketPrice']}")
+
+        message = await ctx.send(embed=embed)
+
+        index = 0
+
+        for emote in emotes:
+            await message.add_reaction(emote)
+
+        def check(r, u):
+            return r.message.id == message.id
+
+        while True:
+            try:
+                r, u = await ctx.bot.wait_for('reaction_add', check=check, timeout=80)
+            except asyncio.TimeoutError:
+                await ctx.send("Timed out! Try again")
+                return
+
+            # if u not in [ctx.author, ctx.bot.user] or r.emoji not in emotes:
+            if u != ctx.bot.user:
+                try:
+                    await message.remove_reaction(r.emoji, u)
+                except:
+                    pass
+            else:
+                continue
+
+            if r.emoji == emotes[0]:
+                if index == 0:
+                    continue
+                else:
+                    # embed.clear_fields()
+                    index -= 1
+                    for emote in emotes:
+                        await message.add_reaction(emote)
+
+            elif r.emoji == emotes[1]:
+                if index == len(data['results']) - 1:
+                    continue
+                else:
+                    # embed.clear_fields()
+                    index += 1
+                    for emote in emotes:
+                        await message.add_reaction(emote)
+
+            elif r.emoji == emotes[2]:
+                return
+
+            card = listjson['results'][index]
+            prices = filter(lambda x: x['productId'] == card['productId'], pricejson['results'])
+            # print(cardprice)
+            embed = discord.Embed(title=f"{card['productName']} [Item {index + 1}/{len(data['results'])}]",
+                                  url=card['url'])
+            embed.set_image(url=card['image'])
+            embed.add_field(name="Pack", value=card['group']['name'])
+            embed.add_field(name="Type", value=card['group']['abbreviation'])
+            for item in card['extendedData']:
+                embed.add_field(name=item['displayName'], value=item['value'])
+
+            for price in prices:
+                if price['marketPrice'] is not None:
+                    embed.add_field(name=f"Market ({price['subTypeName']})",
+                                    value=f"${price['marketPrice']}")
+
+            await message.edit(embed=embed)
+
+    @commands.command()
+    async def random(self, ctx):
+        """View a random listing"""
+        async with ctx.channel.typing():
+            while True:
+                listdata = await ctx.bot.session.get(
+                    f"{self.API_BASE}/catalog/products/" + str(random.randint(1, 100000)),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                    },
+                )
+
+                listjson = await listdata.json()
+                if len(list('results')) > 0:
+                    card = listjson['results'][0]
+                    break
+
+            embed = discord.Embed(title=card['productName'], url=card['url'])
+            embed.set_image(url=card['image'])
+            embed.add_field(name="Pack", value=card['group']['name'])
+            embed.add_field(name="Type", value=card['group']['abbreviation'])
+            for item in card['extendedData']:
+                embed.add_field(name=item['displayName'], value=item['value'])
+
+        await ctx.send(embed=embed)
+
+    @commands.command()
+    async def info(self, ctx, *, name: str):
+        """Search the value of something in terms of Guardians Rising packs. `c!info Burning Shadows`
+        `c!info Golisopod GX` Very early beta, you might just check ou7c4st"""
         emotes = "\u25c0\u25b6\u274c"
 
-        card = listjson['results'][0]
-        cardprice = pricejson['results'][0]
-        print(cardprice)
-        embed = discord.Embed(title=f"{card['productName']} [Item {1}/{len(data['results'])}]", url=card['url'])
-        embed.set_image(url=card['image'])
-        embed.add_field(name="Pack", value=card['group']['name'])
-        embed.add_field(name="Type", value=card['group']['abbreviation'])
-        for item in card['extendedData']:
-            embed.add_field(name=item['displayName'], value=item['value'])
-
-        embed.add_field(name="Market Price", value=f"${cardprice['marketPrice']}")
+        print(self.ocarddata)
+        vname = name + " 0"
+        cards = []
+        print(vname)
+        print(vname in self.ocarddata), print(self.ocarddata[vname])
+        while vname in self.ocarddata:
+            cards.append(vname)
+            vname = vname[:-1] + str(int(vname[-1]) + 1)
+        cards.reverse()
+        embed = discord.Embed(title=name)
+        for fname, field in self.ocarddata[cards[0]].items():
+            field = field or "N/A"
+            embed.add_field(name=fname, value=field)
 
         message = await ctx.send(embed=embed)
 
@@ -203,7 +327,7 @@ class Commands:
                         await message.add_reaction(emote)
 
             elif r.emoji == emotes[1]:
-                if index == len(data['results']) - 1:
+                if index == len(cards) - 1:
                     continue
                 else:
                     embed.clear_fields()
@@ -214,46 +338,11 @@ class Commands:
             elif r.emoji == emotes[2]:
                 return
 
-            card = listjson['results'][index]
-            cardprice = pricejson['results'][index]
-            print(cardprice)
-            embed = discord.Embed(title=f"{card['productName']} [Item {index + 1}/{len(data['results'])}]",
-                                  url=card['url'])
-            embed.set_image(url=card['image'])
-            embed.add_field(name="Pack", value=card['group']['name'])
-            embed.add_field(name="Type", value=card['group']['abbreviation'])
-            for item in card['extendedData']:
-                embed.add_field(name=item['displayName'], value=item['value'])
-            embed.add_field(name="Market Price", value=cardprice["marketPrice"])
+            for fname, field in self.ocarddata[cards[index]].items():
+                field = field or "N/A"
+                embed.add_field(name=fname, value=field)
 
             await message.edit(embed=embed)
-
-    @commands.command()
-    async def random(self, ctx):
-        """View a random listing"""
-        import random
-        while True:
-            listdata = await ctx.bot.session.get(
-                f"{self.API_BASE}/catalog/products/" + str(random.randint(1, 100000)),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
-                },
-            )
-
-            listjson = await listdata.json()
-            if len(list('results')) > 0:
-                card = listjson['results'][0]
-                break
-
-        embed = discord.Embed(title=card['productName'], url=card['url'])
-        embed.set_image(url=card['image'])
-        embed.add_field(name="Pack", value=card['group']['name'])
-        embed.add_field(name="Type", value=card['group']['abbreviation'])
-        for item in card['extendedData']:
-            embed.add_field(name=item['displayName'], value=item['value'])
-
-        await ctx.send(embed=embed)
 
 
 bot = Bot()
