@@ -25,10 +25,10 @@ class Bot(commands.Bot):
     PRIVATE_KEY = auth[2]
 
     started = False
+    session = None
 
     def __init__(self):
         super().__init__("c!")
-        self.session = aiohttp.ClientSession(loop=self.loop)
         self.cmdobj = Commands(self)
         self.add_cog(self.cmdobj)
         self.add_cog(Administration(self))
@@ -84,6 +84,8 @@ class Bot(commands.Bot):
             await asyncio.sleep(14400)
 
     async def refresh(self):
+        self.session = aiohttp.ClientSession()
+
         while True:
             response = await self.session.get(
                 "https://api.tcgplayer.com/token",
@@ -98,8 +100,10 @@ class Bot(commands.Bot):
                 })
             )
             data = await response.json()
-            self.BEARER_TOKEN = data["access_token"]
+            print(data)
+            self.BEARER_TOKEN = data["access_token"].strip()
             assert data["userName"].lower() == self.PUBLIC_KEY.lower()
+
             await self.cmdobj.prep()
             await asyncio.sleep(data["expires_in"])
 
@@ -114,7 +118,7 @@ class Commands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    API_BASE = "http://api.tcgplayer.com/v1.20.0"
+    API_BASE = "https://api.tcgplayer.com/v1.37.0"
     manifests: dict
     categories: dict
     POKEMON_ID: int
@@ -128,27 +132,31 @@ class Commands(commands.Cog):
     async def prep(self):
         self.manifests = {}
 
+        headers = {"accept": "application/json",
+                   "Content-Type": "application/json",
+                   "Authorization": "bearer " + self.bot.BEARER_TOKEN}
+
         response = await self.bot.session.get(
             f"{self.API_BASE}/catalog/categories",
-            headers={
-                "Authorization": f"bearer {self.bot.BEARER_TOKEN}",
-                "Accept": "application/json"
-            },
+            headers=headers,
             params={"limit": 60}
         )
         rjson = await response.json()
+        print(json.dumps(rjson, indent=4))
 
         self.categories = {v["name"]: v["categoryId"] for v in rjson["results"]}
         self.POKEMON_ID = self.categories["Pokemon"]
         self.MAGIC_ID = self.categories["Magic"]
-        self.YUGIOH_ID = self.categories["YuGiOh"]
+        self.YUGIOH_ID = 2
         self.VANGUARD_ID = self.categories["Cardfight Vanguard"]
 
         for id in [self.POKEMON_ID, self.MAGIC_ID, self.YUGIOH_ID, self.VANGUARD_ID]:
             response = await self.bot.session.get(
                 f"{self.API_BASE}/catalog/categories/{id}/search/manifest",
                 headers={
-                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                    "accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": "bearer " + self.bot.BEARER_TOKEN
                 },
             )
             self.manifests[id] = await response.json()
@@ -157,8 +165,9 @@ class Commands(commands.Cog):
         groupdata = await self.bot.session.get(
             f"{self.API_BASE}/catalog/groups/{groupid}",
             headers={
+                "accept": "application/json",
                 "Content-Type": "application/json",
-                "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                "Authorization": "bearer " + self.bot.BEARER_TOKEN
             },
         )
         return (await groupdata.json())['results'][0]
@@ -224,7 +233,7 @@ class Commands(commands.Cog):
                 f"{self.API_BASE}/catalog/categories/{self.categories[game]}/search",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                    "Authorization": f"Bearer {self.bot.BEARER_TOKEN}"
                 },
                 data=json.dumps({
                     "sort": sort_type,
@@ -243,7 +252,7 @@ class Commands(commands.Cog):
                 f"{self.API_BASE}/pricing/product/" + ",".join(str(x) for x in data['results']),
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                    "Authorization": f"Bearer {self.bot.BEARER_TOKEN}"
                 },
             )
 
@@ -252,7 +261,7 @@ class Commands(commands.Cog):
                     str(x) for x in data['results']) + "?getExtendedFields=true",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                    "Authorization": f"Bearer {self.bot.BEARER_TOKEN}"
                 },
             )
 
@@ -264,7 +273,7 @@ class Commands(commands.Cog):
             emotes = "\u25c0\u25b6\u274c"
 
             card = listjson['results'][0]
-            #print(card)
+            # print(card)
             adata = "?partner={a}&utm_campaign=affiliate&utm_medium={a}&utm_source={a}".format(a="CardBuddy")
             prices = filter(lambda x: x['productId'] == card['productId'], pricejson['results'])
             # print(pricejson['results'])
@@ -357,7 +366,7 @@ class Commands(commands.Cog):
                     f"{self.API_BASE}/catalog/products/" + str(random.randint(1, 100000)),
                     headers={
                         "Content-Type": "application/json",
-                        "Authorization": f"bearer {self.bot.BEARER_TOKEN}"
+                        "Authorization": f"Bearer {self.bot.BEARER_TOKEN}"
                     },
                 )
 
@@ -375,7 +384,7 @@ class Commands(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command()
+    @commands.command(hidden=True)
     async def ptcgo(self, ctx, *, name: str):
         """Search the value of something in terms of Guardians Rising packs. `c!info Burning Shadows`
         `c!info Golisopod GX` Very early beta, you might just check ou7c4st"""
@@ -566,7 +575,7 @@ class Administration(commands.Cog):
         embed.set_thumbnail(url=self.bot.user.avatar_url)
         await ctx.send(delete_after=60, embed=embed)
 
-    @commands.command()
+    @commands.command(hidden=True)
     async def totalcmds(self, ctx):
         """Get totals of commands and their number of uses"""
         embed = discord.Embed(color=random.randint(0, 0xFFFFFF), )
@@ -582,7 +591,7 @@ class Administration(commands.Cog):
         To display the source code of a subcommand you have to separate it by
         periods, e.g. tag.create for the create subcommand of the tag command.
         """
-        source_url = 'https://github.com/henry232323/RPGBot'
+        source_url = 'https://github.com/henry232323/CardBuddy'
         if command is None:
             await ctx.send(source_url)
             return
